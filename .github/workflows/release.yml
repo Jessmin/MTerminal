@@ -1,6 +1,7 @@
 name: Publish Windows release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -26,6 +27,7 @@ jobs:
           node-version: '22'
           cache: npm
       - name: Check tag matches package version
+        if: github.ref_type == 'tag'
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: node -e "if (process.env.RELEASE_TAG !== 'v' + require('./package.json').version) throw new Error('Tag does not match package.json version')"
@@ -46,6 +48,7 @@ jobs:
             release/*-windows-x64-SHA256SUMS.txt
 
   publish:
+    if: github.ref_type == 'tag'
     needs: windows
     runs-on: ubuntu-latest
     timeout-minutes: 15

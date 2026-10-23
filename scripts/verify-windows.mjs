@@ -11,7 +11,7 @@ const machine = arch === 'x64' ? 0x8664 : 0xaa64;
 const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 const output = path.resolve('release', arch === 'x64' ? 'win-unpacked' : 'win-arm64-unpacked');
 const archive = path.join(output, 'resources/app.asar');
-const entries = asar.listPackage(archive);
+const entries = asar.listPackage(archive).map(entry => entry.replaceAll('\\', '/'));
 const read = filename => asar.extractFile(archive, filename);
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function peMachine(bytes) {
