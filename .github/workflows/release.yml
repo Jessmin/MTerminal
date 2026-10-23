@@ -1,0 +1,73 @@
+name: Publish Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Check tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node -e "if (process.env.RELEASE_TAG !== 'v' + require('./package.json').version) throw new Error('Tag does not match package.json version')"
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:ui
+      - run: npm run dist:win
+      - name: Generate checksums
+        run: node scripts/windows-checksums.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/*-windows-x64-setup.exe
+            release/*-windows-x64.zip
+            release/*-windows-x64-SHA256SUMS.txt
+
+  publish:
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64
+          path: release
+      - name: Publish preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            release/*-windows-x64-setup.exe \
+            release/*-windows-x64.zip \
+            release/*-windows-x64-SHA256SUMS.txt \
+            --verify-tag \
+            --title "MTerminal ${RELEASE_TAG#v} — Windows 预览版" \
+            --notes-file .github/windows-release-notes.md \
+            --prerelease

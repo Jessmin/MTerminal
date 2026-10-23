@@ -4,6 +4,8 @@
 
 当前版本：**0.1.4 预览版**。提供 Apple Silicon macOS 和 Windows x64 构建。
 
+Windows 安装版和便携版见 [GitHub Releases](https://github.com/Jessmin/MTerminal/releases)。
+
 ## 功能
 
 - 多标签本地终端，SSH 密码 / 私钥登录，主机分组和搜索。
@@ -25,7 +27,7 @@
 | Linux / macOS SSH 资源监控 | 支持 | 支持 |
 | 本机资源监控 | 支持 | 暂不支持 |
 
-macOS 构建已完成本地运行验证。Windows 包在 macOS 上交叉构建，已检查 PE 架构、原生模块、应用资源及源码一致性，**尚未完成 Windows 实机运行验证**。预览版尚无 Windows 代码签名证书，macOS 使用本地临时签名。
+macOS 构建已完成本地运行验证。Windows 可在 macOS 上交叉构建，也可由 GitHub Actions 在 Windows runner 上构建；打包校验包含 PE 架构、原生模块、应用资源及源码一致性，**尚未完成 Windows 桌面的完整交互验收**。预览版尚无 Windows 代码签名证书，macOS 使用本地临时签名。
 
 文件夹传输请先打包。当前不包含 RDP、云同步、跳板机、断点续传或复杂交互认证。文本编辑单文件上限为 1 MiB。
 
@@ -65,6 +67,8 @@ node scripts/build-windows.mjs --arm64  # 可选 Windows ARM64 构建入口，�
 - `MTerminal-0.1.4-windows-x64.zip`（完整解压后运行 `MTerminal.exe`）
 
 Windows 构建使用官方 Electron 分发包，按依赖记录的 SHA-256 校验，并保留对应架构的 node-pty 预编译模块。独立校验命令：`node scripts/verify-windows.mjs`。安装包和本地构建缓存不存入 Git。
+
+维护者推送与 `package.json` 版本一致的 `v*` 标签后，GitHub Actions 会在 Windows runner 上运行测试、构建并发布预览 Release，附带 EXE、ZIP 和 SHA-256 校验文件。
 
 ## 快捷键
 

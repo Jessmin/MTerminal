@@ -58,7 +58,7 @@ const report = {
   cross_built_on: `${process.platform}-${process.arch}`,
   checks: ['PE architecture', 'Windows node-pty prebuilds unpacked', 'Node-API registration', 'product resources', 'current platform source', 'license notices', 'analysis and tests excluded'],
   native_modules: natives, artifacts,
-  runtime_validation: 'Not performed: no Windows runtime available on this Mac',
+  runtime_validation: 'Not performed: package validation does not launch the desktop application',
   signing: 'Unsigned preview build',
 };
 fs.mkdirSync('artifacts', { recursive: true });
