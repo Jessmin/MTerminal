@@ -1,0 +1,23 @@
+node_modules/
+dist/
+release/
+.build/
+.DS_Store
+*.log
+
+# Local research, validation reports and connection-specific diagnostics
+/analysis/
+/artifacts/
+/docs/
+
+# Credentials and local configuration must never enter source control
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+.idea/
+.vscode/

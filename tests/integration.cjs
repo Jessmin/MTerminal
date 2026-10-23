@@ -1,0 +1,185 @@
+const { app } = require('electron');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const assert = require('node:assert/strict');
+const { Store } = require('../electron/store.cjs');
+const { Sessions } = require('../electron/sessions.cjs');
+const { Files } = require('../electron/files.cjs');
+const { Resources } = require('../electron/resources.cjs');
+const { startServer } = require('./ssh-fixture.cjs');
+
+const events = [];
+const timeout = setTimeout(() => { console.error('Integration timeout'); app.exit(1); }, 90000);
+const wait = async (predicate, label, timeoutMs = 12000) => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const result = predicate(); if (result) return result;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error('Timed out: ' + label);
+};
+const passed = label => console.log('PASS ' + label);
+app.whenReady().then(async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mterminal-integration-'));
+  const remote = path.join(root, 'remote'); const local = path.join(root, 'local');
+  fs.mkdirSync(remote); fs.mkdirSync(local);
+  fs.writeFileSync(path.join(remote, 'hello.txt'), '你好，MTerminal\n');
+  let server;
+  let sessions;
+  let files;
+  try {
+    server = await startServer(remote);
+    const store = new Store(path.join(root, 'profiles'), { isEncryptionAvailable: () => false });
+    const host = store.save({ hostname: '127.0.0.1', username: 'tester', port: server.port });
+    sessions = new Sessions(store, (channel, event) => { events.push({ channel, ...event }); if (channel === 'session:data') sessions.ack(event.id, event.data.length); });
+    files = new Files(sessions, (channel, event) => events.push({ channel, ...event }), async () => true, filename => fs.promises.rm(filename));
+    const localId = crypto.randomUUID();
+    sessions.start({ id: localId, type: 'local', cwd: local });
+    sessions.write(localId, "printf '\\x4c\\x4f\\x43\\x41\\x4c\\x5f\\x4f\\x4b\\n'\r");
+    await wait(() => events.some(event => event.id === localId && event.data?.includes('LOCAL_OK')), 'native PTY output');
+    sessions.resize(localId, 96, 28);
+    sessions.activate(localId);
+    const localChild = path.join(local, "中文 folder ' test"); fs.mkdirSync(localChild);
+    const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";
+    sessions.write(localId, `cd -- ${quote(localChild)}\r`);
+    await wait(() => sessions.items.get(localId)?.cwd === fs.realpathSync(localChild), 'local terminal cd tracking');
+    const secondLocal = crypto.randomUUID();
+    sessions.start({ id: secondLocal, type: 'local', cwd: remote });
+    sessions.activate(secondLocal);
+    await wait(() => sessions.items.get(secondLocal)?.cwd === fs.realpathSync(remote), 'second local cwd');
+    assert.equal(sessions.items.get(localId).cwd, fs.realpathSync(localChild));
+    sessions.activate(localId);
+    sessions.write(localId, 'touch created-in-terminal.txt\r');
+    await wait(() => fs.existsSync(path.join(localChild, 'created-in-terminal.txt')), 'file created by local terminal');
+    assert.ok((await files.list({ side: 'local', directory: sessions.items.get(localId).cwd })).entries.some(entry => entry.name === 'created-in-terminal.txt'));
+    sessions.write(localId, 'cd ..\r');
+    await wait(() => sessions.items.get(localId)?.cwd === fs.realpathSync(local), 'local parent directory');
+    sessions.write(localId, 'cd -\r');
+    await wait(() => sessions.items.get(localId)?.cwd === fs.realpathSync(localChild), 'local previous directory');
+    const resources = new Resources(sessions);
+    const initialResource = await resources.read(localId);
+    assert.equal(initialResource.cpuPercent, null); assert(initialResource.memory.total > 0);
+    await new Promise(resolve => setTimeout(resolve, 2100));
+    const nextResource = await resources.read(localId);
+    assert(nextResource.cpuPercent >= 0 && nextResource.cpuPercent <= 100);
+    assert(nextResource.disk?.total > 0); assert(nextResource.network.some(value => value.receiveRate !== null));
+    passed('real local resource samples / CPU delta / memory / disk / per-interface network rates');
+    sessions.close(secondLocal);
+    sessions.close(localId);
+    assert.equal(sessions.items.has(localId), false);
+    passed('native PTY spawn / UTF-8 output / resize / cleanup');
+    passed('actual local cwd follows quoted unicode paths, cd .. / cd -, with per-session isolation');
+
+    const id = crypto.randomUUID();
+    sessions.start({ id, type: 'ssh', hostId: host.id, secret: 'integration-only' });
+    const verification = await wait(() => events.find(event => event.channel === 'host:verify' && event.sessionId === id), 'first SSH fingerprint');
+    assert.equal(verification.changed, false);
+    sessions.resolveTrust(verification.challengeId, 'save');
+    await wait(() => events.find(event => event.id === id && event.status === 'ready'), 'SSH login');
+    sessions.write(id, "printf '\\123\\123\\110\\137\\117\\113\\n'\n");
+    await wait(() => events.some(event => event.id === id && event.data?.includes('SSH_OK')), 'SSH shell output');
+    passed('SSH authentication / first-use fingerprint / shell I/O');
+
+    sessions.activate(id);
+    const remoteChild = path.join(remote, 'remote 中文 folder'); fs.mkdirSync(remoteChild);
+    sessions.write(id, `cd -- ${quote(remoteChild)}\n`);
+    await wait(() => sessions.items.get(id)?.cwd === fs.realpathSync(remoteChild), 'remote shell actual cwd');
+    assert.ok(sessions.items.get(id).shellPid > 0);
+    assert.equal(sessions.items.get(id).remoteOS, 'Darwin');
+    const remoteListing = await files.list({ side: 'remote', sessionId: id, directory: sessions.items.get(id).cwd });
+    assert.equal(remoteListing.directory, fs.realpathSync(remoteChild));
+    sessions.write(id, 'cd ..\n');
+    await wait(() => sessions.items.get(id)?.cwd === fs.realpathSync(remote), 'remote parent directory');
+    passed('remote interactive shell PID and cwd follow actual cd, independent of SFTP home');
+    const remoteResource = await resources.read(id);
+    assert.equal(remoteResource.sessionId, id); assert.equal(remoteResource.platform, 'Darwin');
+    assert(remoteResource.cpuPercent >= 0 && remoteResource.cpuPercent <= 100); assert(remoteResource.memory.total > 0);
+    assert(remoteResource.disk?.total > 0);
+    assert(!events.some(event => event.id === id && event.data?.includes('__MTERMINAL_RESOURCE_V1__')));
+    passed('real SSH resource collection uses a separate exec channel and does not alter terminal output');
+
+    const listing = await files.list({ side: 'remote', sessionId: id, directory: '.' });
+    assert.equal(fs.realpathSync(listing.directory), fs.realpathSync(remote)); assert.ok(listing.entries.some(entry => entry.name === 'hello.txt'));
+    const source = await files.readText({ side: 'remote', sessionId: id, filename: path.join(remote, 'hello.txt') });
+    assert.equal(source.text, '你好，MTerminal\n');
+    await files.writeText({ side: 'remote', sessionId: id, filename: path.join(remote, 'hello.txt'), text: 'edited\n', revision: source.revision });
+    await assert.rejects(() => files.writeText({ side: 'remote', sessionId: id, filename: path.join(remote, 'hello.txt'), text: 'stale', revision: source.revision }), /修改/);
+    await files.mutate({ side: 'remote', sessionId: id, action: 'mkdir', directory: remote, name: 'new-dir' });
+    await files.mutate({ side: 'remote', sessionId: id, action: 'rename', directory: remote, name: 'new-dir', nextName: 'renamed' });
+    await files.mutate({ side: 'remote', sessionId: id, action: 'delete', directory: remote, name: 'renamed' });
+    assert.equal(fs.existsSync(path.join(remote, 'renamed')), false);
+    passed('SFTP listing / UTF-8 edit / conflict rejection / mkdir / rename / delete');
+
+    await files.mutate({ side: 'remote', sessionId: id, action: 'touch', directory: remote, name: 'new.txt' });
+    assert.equal(fs.readFileSync(path.join(remote, 'new.txt'), 'utf8'), '');
+    await assert.rejects(() => files.mutate({ side: 'remote', sessionId: id, action: 'touch', directory: remote, name: 'new.txt' }));
+    await files.mutate({ side: 'local', action: 'touch', directory: local, name: '本地.txt' });
+    const localFile = await files.readText({ side: 'local', filename: path.join(local, '本地.txt') });
+    await files.writeText({ side: 'local', filename: path.join(local, '本地.txt'), text: '本地原子保存', revision: localFile.revision });
+    assert.equal(fs.readFileSync(path.join(local, '本地.txt'), 'utf8'), '本地原子保存');
+    passed('exclusive file creation and local atomic text save');
+
+    const content = crypto.randomBytes(256 * 1024);
+    fs.writeFileSync(path.join(local, 'upload.bin'), content);
+    const [upload] = await files.transfer({ direction: 'upload', sessionId: id, sources: [path.join(local, 'upload.bin')], directory: remote });
+    await wait(() => events.find(event => event.id === upload && ['done', 'error'].includes(event.status)), 'upload');
+    assert.equal(files.transfers.get(upload).status, 'done');
+    assert.deepEqual(fs.readFileSync(path.join(remote, 'upload.bin')), content);
+    fs.writeFileSync(path.join(local, 'upload.bin'), 'overwrite-verified');
+    const [overwrite] = await files.transfer({ direction: 'upload', sessionId: id, sources: [path.join(local, 'upload.bin')], directory: remote });
+    await files.queue;
+    assert.equal(files.transfers.get(overwrite).status, 'done');
+    assert.equal(fs.readFileSync(path.join(remote, 'upload.bin'), 'utf8'), 'overwrite-verified');
+    fs.writeFileSync(path.join(remote, 'upload.bin'), content);
+    const destination = path.join(local, 'downloads'); fs.mkdirSync(destination);
+    const [download] = await files.transfer({ direction: 'download', sessionId: id, sources: [path.join(remote, 'upload.bin')], directory: destination });
+    await wait(() => events.find(event => event.id === download && ['done', 'error'].includes(event.status)), 'download');
+    assert.equal(files.transfers.get(download).status, 'done');
+    assert.deepEqual(fs.readFileSync(path.join(destination, 'upload.bin')), content);
+    passed('upload and download preserve exact binary contents');
+
+    fs.writeFileSync(path.join(remote, 'large.bin'), Buffer.alloc(8 * 1024 * 1024, 123));
+    const [cancelled] = await files.transfer({ direction: 'download', sessionId: id, sources: [path.join(remote, 'large.bin')], directory: destination });
+    await wait(() => files.transfers.get(cancelled).status === 'running', 'cancellable download');
+    files.cancel(cancelled);
+    await wait(() => files.transfers.get(cancelled).status === 'cancelled', 'cancel result');
+    await files.queue;
+    assert.equal(fs.existsSync(path.join(destination, 'large.bin')), false);
+    assert.equal(fs.readdirSync(destination).some(name => name.endsWith('.part')), false);
+    passed('transfer cancellation removes partial files');
+
+    sessions.close(id);
+    await server.close();
+    server = await startServer(remote, host.port);
+    const changedId = crypto.randomUUID();
+    sessions.start({ id: changedId, type: 'ssh', hostId: host.id, secret: 'integration-only' });
+    const changed = await wait(() => events.find(event => event.channel === 'host:verify' && event.sessionId === changedId), 'changed host key');
+    assert.equal(changed.changed, true); assert.notEqual(changed.previous, changed.fingerprint);
+    sessions.resolveTrust(changed.challengeId, 'reject');
+    await wait(() => !sessions.items.has(changedId), 'rejected session cleanup');
+    assert.equal(events.some(event => event.id === changedId && event.status === 'ready'), false);
+    passed('changed SSH host key is detected and rejection blocks login');
+
+    const failedId = crypto.randomUUID();
+    store.trust(host.hostname, host.port, changed.fingerprint);
+    sessions.start({ id: failedId, type: 'ssh', hostId: host.id, secret: 'incorrect' });
+    await wait(() => events.find(event => event.id === failedId && event.status === 'error'), 'authentication failure');
+    assert.equal(sessions.items.has(failedId), false);
+    passed('authentication failure releases the session');
+
+    const privateKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' });
+    const keyPath = path.join(local, 'test-key'); fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
+    const keyHost = store.save({ ...host, auth: 'key', privateKeyPath: keyPath });
+    const keyId = crypto.randomUUID();
+    sessions.start({ id: keyId, type: 'ssh', hostId: keyHost.id });
+    await wait(() => events.find(event => event.id === keyId && event.status === 'ready'), 'private key login');
+    sessions.close(keyId);
+    passed('SSH private key login');
+    console.log('All integration checks passed.');
+  } finally {
+    files?.dispose(); sessions?.dispose(); if (server) await server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}).then(() => { clearTimeout(timeout); app.exit(0); }).catch(error => { clearTimeout(timeout); console.error(error); app.exit(1); });
