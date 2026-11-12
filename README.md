@@ -2,7 +2,7 @@
 
 一个专注于终端、SSH 和文件管理的桌面工作台，使用 Electron、React、TypeScript、xterm.js、node-pty 和 ssh2 构建。
 
-当前版本：**0.1.4 预览版**。提供 Apple Silicon macOS 和 Windows x64 构建。
+当前版本：**0.1.5 预览版**。提供 Apple Silicon macOS 和 Windows x64 构建。
 
 Windows 安装版和便携版见 [GitHub Releases](https://github.com/Jessmin/MTerminal/releases)。
 
@@ -63,9 +63,9 @@ node scripts/build-windows.mjs --arm64  # 可选 Windows ARM64 构建入口，�
 
 输出位于 `release/`：
 
-- `MTerminal-0.1.4-arm64.dmg`
-- `MTerminal-0.1.4-windows-x64-setup.exe`
-- `MTerminal-0.1.4-windows-x64.zip`（完整解压后运行 `MTerminal.exe`）
+- `MTerminal-0.1.5-arm64.dmg`
+- `MTerminal-0.1.5-windows-x64-setup.exe`
+- `MTerminal-0.1.5-windows-x64.zip`（完整解压后运行 `MTerminal.exe`）
 
 Windows 构建使用官方 Electron 分发包，按依赖记录的 SHA-256 校验，并保留对应架构的 node-pty 预编译模块。独立校验命令：`node scripts/verify-windows.mjs`。安装包和本地构建缓存不存入 Git。
 
