@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('mterminal', {
   startSession: input => invoke('session:start', input),
   closeSession: id => invoke('session:close', id),
   activateSession: id => invoke('session:activate', id),
+  networkOnline: () => ipcRenderer.send('network:online'),
   resourceSample: id => invoke('resources:sample', id),
   write: (id, data) => ipcRenderer.send('session:write', id, data),
   resize: (id, cols, rows) => ipcRenderer.send('session:resize', id, cols, rows),

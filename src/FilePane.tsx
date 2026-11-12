@@ -5,7 +5,7 @@ import { TextPrompt } from './Dialogs';
 
 type Prompt = { title: string; initial?: string; description?: string; danger?: boolean; confirmLabel?: string; run: (value: string) => Promise<void> };
 type Props = {
-  side: Side; home: string; sessionId: string; online: boolean; hostName?: string; initialDirectory?: string; terminalDirectory?: string;
+  side: Side; home: string; sessionId: string; online: boolean; reconnecting?: boolean; hostName?: string; initialDirectory?: string; terminalDirectory?: string;
   refresh: number; selection: Entry[];
   onSelection: (entries: Entry[]) => void;
   onDirectory: (directory: string) => void;
@@ -54,6 +54,7 @@ export function FilePane(props: Props) {
     setEntries([]); setDirectory(''); dir.current = ''; setPathInput(''); setError('');
     latest.current.onSelection([]); latest.current.onDirectory('');
     if (available) void load(latest.current.terminalDirectory || latest.current.initialDirectory || (remote ? '.' : home));
+    else { setBusy(false); setDragging(false); }
     return () => { request.current++; };
   }, [load, available, home, remote]);
   useEffect(() => {
@@ -153,7 +154,7 @@ export function FilePane(props: Props) {
         {!visible.length && <div className="file-empty">{busy ? <><LoaderCircle size={20} className="spin" /><span>正在读取目录…</span></> : <><FolderOpen size={25} /><span>{query ? '没有匹配的文件' : '文件夹为空'}</span></>}</div>}
       </div>
       <footer className="file-pane-footer"><span>{visible.length} 个项目{selection.length ? ` · 已选 ${selection.length} 项` : ''}</span><span>{selection.length > 0 && <Check size={11} />} {selection.length > 0 ? size(selection.reduce((total, item) => total + (item.directory ? 0 : item.size), 0)) : '双击打开 · 跟随终端目录 · 自动刷新'}</span></footer>
-    </> : <div className="remote-empty"><div className="remote-illustration">{remote ? <Server size={27} /> : <HardDrive size={27} />}<span className="connection-dot" /></div><h3>等待当前终端连接</h3><p>终端就绪后，自动显示对应文件</p></div>}
+    </> : <div className="remote-empty"><div className="remote-illustration">{remote ? <Server size={27} /> : <HardDrive size={27} />}<span className="connection-dot" /></div><h3>{props.reconnecting ? '等待 SSH 重连' : '等待当前终端连接'}</h3><p>终端就绪后，自动显示对应文件</p></div>}
     {dragging && <div className="drop-overlay"><Upload size={27} /><strong>{remote ? '松开以上传到此目录' : '松开以下载到此目录'}</strong></div>}
     {prompt && <TextPrompt title={prompt.title} initial={prompt.initial} description={prompt.description} danger={prompt.danger} confirmLabel={prompt.confirmLabel} onClose={() => setPrompt(null)} onSubmit={prompt.run} />}
   </section>;

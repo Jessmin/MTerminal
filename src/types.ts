@@ -6,7 +6,7 @@ export type Session = {
   id: string; type: 'local' | 'ssh'; label: string; hostId?: string;
   cwd?: string; secret?: string; saveSecret?: boolean; useSavedSecret?: boolean;
   cwdRevision?: number;
-  status: 'connecting' | 'ready' | 'exited' | 'error'; detail?: string;
+  status: 'connecting' | 'reconnecting' | 'ready' | 'exited' | 'error'; detail?: string;
 };
 export type Entry = { name: string; directory: boolean; symlink: boolean; size: number; modified: number; mode: number };
 export type Side = 'local' | 'remote';
@@ -39,6 +39,7 @@ export interface Bridge {
   startSession(input: Partial<Session> & { cols?: number; rows?: number }): Promise<{ id: string }>;
   closeSession(id: string): Promise<void>;
   activateSession(id: string | null): Promise<void>;
+  networkOnline(): void;
   resourceSample(id: string): Promise<ResourceSample>;
   write(id: string, data: string): void;
   resize(id: string, cols: number, rows: number): void;

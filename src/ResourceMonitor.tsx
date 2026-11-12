@@ -26,7 +26,8 @@ export function ResourceMonitor({ session, hostName }: { session?: Session; host
     document.addEventListener('visibilitychange', changed);
     return () => document.removeEventListener('visibilitychange', changed);
   }, []);
-  useEffect(() => { setSample(null); setHistory([]); setError(''); setSelectedInterface(''); }, [id]);
+  useEffect(() => { setSample(null); setHistory([]); setError(''); }, [id, online]);
+  useEffect(() => { setSelectedInterface(''); }, [id]);
   useEffect(() => {
     if (!id || !online || paused || collapsed || !visible) return;
     let cancelled = false, timer: ReturnType<typeof setTimeout>;
@@ -54,7 +55,7 @@ export function ResourceMonitor({ session, hostName }: { session?: Session; host
       <button className="icon-button" title={collapsed ? '展开资源监控' : '收起资源监控'} aria-label={collapsed ? '展开资源监控' : '收起资源监控'} aria-expanded={!collapsed} onClick={() => setCollapsed(value => !value)}><ChevronDown size={14} className={collapsed ? 'resource-chevron-closed' : ''} /></button>
     </header>
     {!collapsed && <>
-      <div className="resource-context"><span title={title}>{session ? title : '无活跃终端'}</span><small className={error ? 'danger-text' : ''}>{online ? status : '等待连接'}</small></div>
+      <div className="resource-context"><span title={title}>{session ? title : '无活跃终端'}</span><small className={error ? 'danger-text' : ''}>{online ? status : session?.status === 'reconnecting' ? '等待重连' : '等待连接'}</small></div>
       {!online ? <div className="resource-waiting">连接终端后，显示对应主机状态</div> : <div className={`resource-body ${error || paused ? 'resource-stale' : ''}`}>
         <div className="resource-row"><div className="resource-label"><Cpu size={12} /><span>CPU</span><strong>{percent(data?.cpuPercent)}</strong></div>
           <svg className="resource-chart" viewBox="0 0 200 22" preserveAspectRatio="none" role="img" aria-label="最近 CPU 使用率趋势"><path d="M0 21.5 H200" className="resource-chart-grid" />{data && history.length > 1 && <polyline points={history.map((value, index) => `${(24 - history.length + index) * 200 / 23},${21 - value * .2}`).join(' ')} />}{data && history.length > 0 && <circle cx="200" cy={21 - history.at(-1)! * .2} r="1.6" fill="#92dab3" />}</svg>

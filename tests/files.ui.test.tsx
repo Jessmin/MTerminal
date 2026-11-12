@@ -24,7 +24,7 @@ beforeEach(async () => {
   Object.assign(harness.api, {
     info: vi.fn(async () => ({ platform: 'darwin', home: '/home/local', version: 'test', shell: '/bin/zsh', shellLabel: 'zsh', encryptedStorage: false })),
     hosts: vi.fn(async () => [{ id: 'remote-host', name: 'Test SSH', hostname: 'test.invalid', username: 'tester', port: 22, group: 'test', auth: 'password', privateKeyPath: '', note: '' }]),
-    activateSession: vi.fn(async () => {}), closeSession: vi.fn(async () => {}),
+    activateSession: vi.fn(async () => {}), closeSession: vi.fn(async () => {}), networkOnline: vi.fn(),
     resourceSample: vi.fn(async () => { throw new Error('该测试不采集主机资源'); }),
     listFiles: vi.fn(async ({ side, directory }: any) => ({ directory: directory === '.' ? '/remote/home' : directory, entries: [file(side === 'local' ? 'local-only.txt' : 'remote-only.txt')] })),
   });
@@ -71,6 +71,35 @@ test('SSH activation replaces local files, and stale remote results cannot repai
   await act(async () => finish({ directory: '/remote/slow', entries: [file('STALE-REMOTE.txt')] })); await flush();
   expect(container.querySelector('[aria-label="远程文件"]')).toBeNull();
   expect(container.textContent).toContain('local-only.txt');
+  expect(container.textContent).not.toContain('STALE-REMOTE.txt');
+});
+
+test('SSH recovery keeps its terminal and refreshes files from the new shell directory', async () => {
+  await click(container.querySelector('.host-main'));
+  await click([...container.querySelectorAll('button')].find(button => button.textContent === '连接主机')!);
+  const remote = activeId();
+  const terminal = container.querySelector('.mock-terminal[data-active="true"]');
+  await emit('state', { id: remote, status: 'ready', detail: 'tester@test.invalid' });
+  await emit('cwd', { id: remote, directory: '/remote/project', revision: 1 });
+
+  let finish: (value: any) => void = () => {};
+  harness.api.listFiles.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await emit('cwd', { id: remote, directory: '/remote/slow', revision: 2 });
+  await emit('state', { id: remote, status: 'reconnecting', detail: '网络连接中断' });
+  expect(container.textContent).toContain('正在自动重连');
+  expect(container.textContent).toContain('等待 SSH 重连');
+  expect([...container.querySelectorAll('button')].find(button => button.textContent === '上传文件')?.disabled).toBe(true);
+
+  await act(async () => window.dispatchEvent(new Event('online')));
+  expect(harness.api.networkOnline).toHaveBeenCalledTimes(1);
+  harness.api.listFiles.mockClear();
+  harness.api.resourceSample.mockClear();
+  await emit('state', { id: remote, status: 'ready', detail: 'tester@test.invalid' });
+  await act(async () => finish({ directory: '/remote/slow', entries: [file('STALE-REMOTE.txt')] }));
+  expect(container.querySelector('.mock-terminal[data-active="true"]')).toBe(terminal);
+  expect(harness.api.listFiles).toHaveBeenCalledWith({ side: 'remote', sessionId: remote, directory: '.' });
+  expect(harness.api.resourceSample).toHaveBeenCalledWith(remote);
+  expect(container.querySelector<HTMLInputElement>('[aria-label="远程路径"]')?.value).toBe('/remote/home');
   expect(container.textContent).not.toContain('STALE-REMOTE.txt');
 });
 

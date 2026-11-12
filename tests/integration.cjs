@@ -76,7 +76,7 @@ app.whenReady().then(async () => {
     sessions.start({ id, type: 'ssh', hostId: host.id, secret: 'integration-only' });
     const verification = await wait(() => events.find(event => event.channel === 'host:verify' && event.sessionId === id), 'first SSH fingerprint');
     assert.equal(verification.changed, false);
-    sessions.resolveTrust(verification.challengeId, 'save');
+    sessions.resolveTrust(verification.challengeId, 'once');
     await wait(() => events.find(event => event.id === id && event.status === 'ready'), 'SSH login');
     sessions.write(id, "printf '\\123\\123\\110\\137\\117\\113\\n'\n");
     await wait(() => events.some(event => event.id === id && event.data?.includes('SSH_OK')), 'SSH shell output');
@@ -150,9 +150,69 @@ app.whenReady().then(async () => {
     assert.equal(fs.readdirSync(destination).some(name => name.endsWith('.part')), false);
     passed('transfer cancellation removes partial files');
 
-    sessions.close(id);
+    sessions.write(id, `cd -- ${quote(remoteChild)}\n`);
+    await wait(() => sessions.items.get(id)?.cwd === fs.realpathSync(remoteChild), 'pre-outage shell cwd');
+    const [interrupted] = await files.transfer({ direction: 'download', sessionId: id, sources: [path.join(remote, 'large.bin')], directory: destination });
+    await wait(() => files.transfers.get(interrupted).status === 'running', 'download before transport loss');
+    const outage = events.length;
+    const attemptsBeforeOutage = server.connectionAttempts;
+    const originalConn = sessions.items.get(id).conn;
+    server.setOnline(false);
+    await wait(() => events.slice(outage).find(event => event.id === id && event.status === 'reconnecting'), 'SSH transport loss enters reconnecting');
+    assert.ok(sessions.items.has(id));
+    await files.queue;
+    assert.equal(files.transfers.get(interrupted).status, 'cancelled');
+    assert.equal(fs.existsSync(path.join(destination, 'large.bin')), false);
+    assert.equal(fs.readdirSync(destination).some(name => name.endsWith('.part')), false);
+    await assert.rejects(() => files.list({ side: 'remote', sessionId: id, directory: '.' }), /SSH 尚未连接/);
+    sessions.resize(id, 122, 33);
+    sessions.write(id, 'touch offline-input-was-replayed\n');
+    await wait(() => server.connectionAttempts > attemptsBeforeOutage, 'SSH retries while the service is unavailable');
+    server.setOnline(true);
+    await wait(() => events.slice(outage).find(event => event.id === id && event.status === 'ready'), 'SSH restores the same session automatically');
+    assert.notEqual(sessions.items.get(id).conn, originalConn);
+    assert.deepEqual(server.lastPty, { cols: 122, rows: 33 });
+    assert.equal(events.slice(outage).some(event => event.sessionId === id && event.channel === 'host:verify'), false);
+    assert.equal(store.fingerprint(host.hostname, host.port), undefined);
+    assert.equal(store.list().find(item => item.id === host.id).hasSecret, false);
+    sessions.write(id, "printf '\\122\\105\\103\\117\\116\\116\\105\\103\\124\\105\\104\\n'\n");
+    await wait(() => events.slice(outage).some(event => event.id === id && event.data?.includes('RECONNECTED')), 'restored SSH shell accepts input');
+    await wait(() => events.slice(outage).some(event => event.id === id && event.directory === fs.realpathSync(remote)), 'restored shell reports its own cwd');
+    assert.equal(fs.existsSync(path.join(remote, 'offline-input-was-replayed')), false);
+    const restoredListing = await files.list({ side: 'remote', sessionId: id, directory: '.' });
+    assert.ok(restoredListing.entries.some(entry => entry.name === 'hello.txt'));
+    assert.equal((await resources.read(id)).sessionId, id);
+    passed('abrupt TCP loss retries and restores the same SSH session, terminal size, one-time trust, and SFTP');
+
+    const exitId = crypto.randomUUID();
+    sessions.start({ id: exitId, type: 'ssh', hostId: host.id, secret: 'integration-only' });
+    const saveVerification = await wait(() => events.find(event => event.channel === 'host:verify' && event.sessionId === exitId), 'one-time trust does not apply to a new session');
+    sessions.resolveTrust(saveVerification.challengeId, 'save');
+    await wait(() => events.find(event => event.id === exitId && event.status === 'ready'), 'SSH session to exit cleanly');
+    assert.equal(store.fingerprint(host.hostname, host.port), verification.fingerprint);
+    sessions.write(exitId, 'exit 7\n');
+    await wait(() => events.find(event => event.id === exitId && event.status === 'exited'), 'remote shell exit');
+    assert.equal(sessions.items.has(exitId), false);
+
+    const cancelId = crypto.randomUUID();
+    sessions.start({ id: cancelId, type: 'ssh', hostId: host.id, secret: 'integration-only' });
+    await wait(() => events.find(event => event.id === cancelId && event.status === 'ready'), 'SSH session to close while reconnecting');
+    const secondOutage = events.length;
+    server.setOnline(false);
+    await wait(() => events.slice(secondOutage).find(event => event.id === cancelId && event.status === 'reconnecting'), 'second tab enters reconnecting');
+    sessions.close(cancelId);
+    assert.equal(sessions.items.has(cancelId), false);
     await server.close();
     server = await startServer(remote, host.port);
+    sessions.networkOnline();
+    await wait(() => events.slice(secondOutage).find(event => event.id === id && event.status === 'error'), 'automatic retry rejects a changed host key');
+    assert.equal(server.connectionAttempts, 1);
+    assert.equal(events.some(event => event.id === exitId && event.status === 'reconnecting'), false);
+    assert.equal(events.slice(secondOutage).some(event => event.sessionId === id && event.channel === 'host:verify'), false);
+    assert.equal(events.slice(secondOutage).some(event => event.id === id && event.status === 'ready'), false);
+    assert.equal(store.fingerprint(host.hostname, host.port), verification.fingerprint);
+    passed('automatic retries stop on remote exit or tab close and reject a changed SSH host key');
+
     const changedId = crypto.randomUUID();
     sessions.start({ id: changedId, type: 'ssh', hostId: host.id, secret: 'integration-only' });
     const changed = await wait(() => events.find(event => event.channel === 'host:verify' && event.sessionId === changedId), 'changed host key');
@@ -171,12 +231,27 @@ app.whenReady().then(async () => {
 
     const privateKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' });
     const keyPath = path.join(local, 'test-key'); fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
-    const keyHost = store.save({ ...host, auth: 'key', privateKeyPath: keyPath });
+    const keyHost = store.save({ ...host, id: crypto.randomUUID(), auth: 'key', privateKeyPath: keyPath });
     const keyId = crypto.randomUUID();
     sessions.start({ id: keyId, type: 'ssh', hostId: keyHost.id });
     await wait(() => events.find(event => event.id === keyId && event.status === 'ready'), 'private key login');
     sessions.close(keyId);
     passed('SSH private key login');
+
+    const revokedId = crypto.randomUUID();
+    sessions.start({ id: revokedId, type: 'ssh', hostId: host.id, secret: 'integration-only' });
+    await wait(() => events.find(event => event.id === revokedId && event.status === 'ready'), 'SSH before password rotation');
+    server.setOnline(false);
+    await wait(() => events.find(event => event.id === revokedId && event.status === 'reconnecting'), 'SSH reconnects after password rotation outage');
+    server.setPassword('rotated-test-password');
+    server.setOnline(true);
+    const attemptsBeforeAuth = server.connectionAttempts;
+    sessions.networkOnline();
+    const authError = await wait(() => events.find(event => event.id === revokedId && event.status === 'error'), 'automatic retry stops on authentication failure');
+    assert.match(authError.detail, /authentication/i);
+    assert.equal(sessions.items.has(revokedId), false);
+    assert.equal(server.connectionAttempts, attemptsBeforeAuth + 1);
+    passed('automatic retry stops when the server rejects the original SSH credentials');
     console.log('All integration checks passed.');
   } finally {
     files?.dispose(); sessions?.dispose(); if (server) await server.close();

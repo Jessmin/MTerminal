@@ -5,16 +5,25 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { api, message, type Session } from './types';
 import '@xterm/xterm/css/xterm.css';
 
+// Cancel a partial escape sequence, restore the normal buffer and reset terminal modes.
+// Move below the old screen so the new shell starts on a fresh line with scrollback intact.
+const reconnectReset = '\x18\x1b[?1000;1006l\x1b[?1047l\x1b[!p\x1b[999B\r\n';
+
 export function TerminalPane({ session, active, onFailure }: { session: Session; active: boolean; onFailure: (id: string, error: string) => void }) {
   const element = useRef<HTMLDivElement>(null);
   const instance = useRef<{ terminal: Terminal; fit: FitAddon } | null>(null);
   const failure = useRef(onFailure);
   failure.current = onFailure;
   useEffect(() => {
+    let disposed = false;
+    let status = session.status;
+    let inputGeneration = 0;
+    let resetting = false;
     const terminal = new Terminal({
       cursorBlink: true, cursorStyle: 'bar', fontSize: 13, lineHeight: 1.32,
       fontFamily: '"SF Mono", "Cascadia Code", Consolas, Menlo, Monaco, "PingFang SC", monospace',
       scrollback: 10000, allowProposedApi: false, convertEol: false,
+      disableStdin: status !== 'ready',
       theme: {
         background: '#101417', foreground: '#d4dce1', cursor: '#77e0be', selectionBackground: '#30645288',
         black: '#283137', red: '#ee868b', green: '#80d7a9', yellow: '#e3c180', blue: '#88b9ef',
@@ -38,6 +47,25 @@ export function TerminalPane({ session, active, onFailure }: { session: Session;
       if (event.id !== session.id) return;
       terminal.write(event.data, () => api.ack(session.id, event.data.length));
     });
+    const unsubscribeState = api.onState(event => {
+      if (event.id !== session.id) return;
+      const disconnected = status === 'ready' && event.status !== 'ready';
+      status = event.status;
+      if (disconnected) {
+        inputGeneration++;
+        if (status === 'reconnecting') {
+          const generation = inputGeneration;
+          resetting = true;
+          terminal.write(reconnectReset, () => {
+            if (disposed || generation !== inputGeneration) return;
+            resetting = false;
+            terminal.options.disableStdin = status !== 'ready';
+          });
+        }
+      }
+      terminal.options.disableStdin = resetting || status !== 'ready';
+      if (status === 'ready') resize();
+    });
     const input = terminal.onData(data => api.write(session.id, data));
     terminal.attachCustomKeyEventHandler(event => {
       if (event.type !== 'keydown') return true;
@@ -48,13 +76,19 @@ export function TerminalPane({ session, active, onFailure }: { session: Session;
         event.preventDefault(); void api.clipboardWrite(terminal.getSelection()); return false;
       }
       if (event.key.toLowerCase() === 'v') {
-        event.preventDefault(); void api.clipboardRead().then(text => terminal.paste(text)); return false;
+        event.preventDefault();
+        if (!terminal.options.disableStdin) {
+          const generation = inputGeneration;
+          void api.clipboardRead().then(text => {
+            if (!disposed && generation === inputGeneration) terminal.paste(text);
+          });
+        }
+        return false;
       }
       if (event.key.toLowerCase() === 'k') { event.preventDefault(); terminal.clear(); return false; }
       return true;
     });
     resize();
-    let disposed = false;
     api.startSession({ ...session, cols: terminal.cols, rows: terminal.rows }).then(() => {
       if (disposed) void api.closeSession(session.id);
       else resize();
@@ -63,7 +97,7 @@ export function TerminalPane({ session, active, onFailure }: { session: Session;
     });
     return () => {
       disposed = true;
-      unsubscribe(); input.dispose(); observer.disconnect();
+      unsubscribe(); unsubscribeState(); input.dispose(); observer.disconnect();
       terminal.dispose(); instance.current = null;
       void api.closeSession(session.id);
     };

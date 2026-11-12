@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, Menu, powerMonitor } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const { Store } = require('./store.cjs');
@@ -54,6 +54,8 @@ function createWindow() {
   const emit = (channel, payload) => { if (window && !window.isDestroyed()) window.webContents.send(channel, payload); };
   const store = new Store(app.getPath('userData'), safeStorage);
   sessions = new Sessions(store, emit);
+  const resume = () => sessions.networkOnline();
+  powerMonitor.on('resume', resume);
   const resources = new Resources(sessions);
   files = new Files(sessions, emit, async names => {
     const result = await dialog.showMessageBox(window, {
@@ -112,10 +114,11 @@ function createWindow() {
     if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('仅允许打开 HTTP / HTTPS 链接');
     return shell.openExternal(parsed.href);
   });
-  for (const channel of ['session:write', 'session:resize', 'session:ack']) ipcMain.removeAllListeners(channel);
+  for (const channel of ['session:write', 'session:resize', 'session:ack', 'network:online']) ipcMain.removeAllListeners(channel);
   ipcMain.on('session:write', (event, id, data) => { if (trusted(event)) sessions.write(id, data); });
   ipcMain.on('session:resize', (event, id, cols, rows) => { if (trusted(event)) sessions.resize(id, cols, rows); });
   ipcMain.on('session:ack', (event, id, amount) => { if (trusted(event)) sessions.ack(id, amount); });
+  ipcMain.on('network:online', event => { if (trusted(event)) sessions.networkOnline(); });
   window.on('close', event => {
     if (window.__closing) return;
     const pending = [...files.transfers.values()].some(task => ['queued', 'running'].includes(task.status));
@@ -126,7 +129,7 @@ function createWindow() {
       });
     }
   });
-  window.on('closed', () => { files.dispose(); sessions.dispose(); window = null; });
+  window.on('closed', () => { powerMonitor.off('resume', resume); files.dispose(); sessions.dispose(); window = null; });
   if (developmentURL === 'http://127.0.0.1:5178') window.loadURL(developmentURL);
   else window.loadFile(path.join(__dirname, '../dist/index.html'));
 }

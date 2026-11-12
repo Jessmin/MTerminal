@@ -34,7 +34,7 @@ class Files {
     this.confirmOverwrite = confirmOverwrite;
     this.trash = trash;
     this.transfers = new Map();
-    sessions.onClose = id => {
+    sessions.onClose = sessions.onDisconnect = id => {
       for (const task of this.transfers.values()) if (task.sessionId === id && ['queued', 'running'].includes(task.status)) task.controller.abort();
     };
   }
@@ -100,10 +100,13 @@ class Files {
     }
   }
   async readText({ side, sessionId, filename }) {
+    const sftp = side === 'remote' ? await this.sessions.sftp(sessionId) : null;
+    return this.readTextFrom(filename, sftp);
+  }
+  async readTextFrom(filename, sftp) {
     validPath(filename);
     let buffer;
-    if (side === 'remote') {
-      const sftp = await this.sessions.sftp(sessionId);
+    if (sftp) {
       const stat = await call(sftp, 'stat', filename);
       if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('编辑器支持不超过 1 MiB 的普通文本文件');
       buffer = await readLimited(sftp.createReadStream(filename));
@@ -121,11 +124,12 @@ class Files {
   async writeText({ side, sessionId, filename, text, revision }) {
     validPath(filename);
     if (typeof text !== 'string' || Buffer.byteLength(text) > 1024 * 1024) throw new Error('文件超过编辑上限');
-    const current = await this.readText({ side, sessionId, filename });
+    // Read and write through the same SFTP channel if the session reconnects mid-save.
+    const sftp = side === 'remote' ? await this.sessions.sftp(sessionId) : null;
+    const current = await this.readTextFrom(filename, sftp);
     if (current.revision !== revision) throw new Error('文件已在其他地方修改，请重新打开后再编辑');
     // Commit through a sibling temporary file so interrupted writes preserve the original.
     // Resolve symlinks first, preserving the link itself and the target's permission bits.
-    const sftp = side === 'remote' ? await this.sessions.sftp(sessionId) : null;
     const target = sftp ? await call(sftp, 'realpath', filename) : await fsp.realpath(filename);
     const stat = sftp ? await call(sftp, 'stat', target) : await fsp.stat(target);
     const temporary = `${target}.mterminal-${crypto.randomUUID()}.part`;

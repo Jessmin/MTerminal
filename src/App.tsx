@@ -43,9 +43,14 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (!api) { setNotice('请在 MTerminal 桌面应用中打开。'); return; }
+    const online = () => api.networkOnline();
+    window.addEventListener('online', online);
     const dispose = [
       api.onState(event => {
-        setSessions(current => current.map(session => session.id === event.id ? { ...session, status: event.status, detail: event.detail, secret: undefined } : session));
+        setSessions(current => current.map(session => session.id === event.id ? {
+          ...session, status: event.status, detail: event.detail, secret: undefined,
+          cwd: event.status === 'reconnecting' ? undefined : session.cwd,
+        } : session));
         if (event.status === 'ready') void reloadHosts().catch(() => {});
       }),
       api.onCwd(event => setSessions(current => current.map(session => session.id === event.id ? { ...session, cwd: event.directory, cwdRevision: event.revision } : session))),
@@ -64,7 +69,11 @@ export default function App() {
     Promise.all([api.info(), api.hosts()]).then(([information, saved]) => {
       setInfo(information); setHosts(saved); local(information.home);
     }).catch(error => notify(message(error)));
-    return () => { dispose.forEach(fn => fn()); if (noticeTimer.current) clearTimeout(noticeTimer.current); };
+    return () => {
+      window.removeEventListener('online', online);
+      dispose.forEach(fn => fn());
+      if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    };
   }, []);
   const active = sessions.find(session => session.id === activeId);
   useEffect(() => { if (api) void api.activateSession(activeId || null).catch(error => notify(message(error))); }, [activeId]);
@@ -162,14 +171,14 @@ export default function App() {
       <main className="workspace">
         <div className="workspace-heading"><div><span className="eyebrow">YOUR COMMAND CENTER</span><h1>终端工作台 <span>{sessions.filter(session => session.status === 'ready').length} 个活跃会话</span></h1></div><div className="heading-actions"><button className="button" onClick={() => local(active?.type === 'local' ? active.cwd : info?.home)}><TerminalSquare size={15} />本地终端</button><button className="button primary" onClick={() => setEditingHost({})}><Plus size={16} />新建 SSH</button></div></div>
         <section className="terminal-workspace" aria-label="终端工作区"><div className="tab-strip"><div className="tabs" role="tablist" ref={tablist}>{sessions.map(session => <div className={`tab-wrapper ${activeId === session.id ? 'active' : ''}`} key={session.id}><button role="tab" aria-selected={activeId === session.id} className="session-tab" onClick={() => setActiveId(session.id)}>{session.type === 'ssh' ? <Server size={13} /> : <TerminalSquare size={13} />}<span>{session.label}</span><span className={`session-dot ${session.status}`} /></button><button className="tab-close" aria-label={`关闭 ${session.label}`} onClick={() => requestClose(session)}><X size={12} /></button></div>)}</div><button className="new-tab icon-button" title={`新建本地终端 ${shortcut}T`} onClick={() => local()}><Plus size={16} /></button><div className="tab-strip-right"><button className={`icon-button ${showFiles ? 'is-active' : ''}`} title={`切换文件面板 ${shortcut}J`} onClick={() => setShowFiles(!showFiles)}><PanelBottom size={16} /></button></div></div>
-          <div className="terminal-toolbar"><div><span className={`connection-state ${active?.status || 'exited'}`} />{active ? active.type === 'ssh' ? `${activeHost?.username || ''}@${activeHost?.hostname || active.label}` : info?.shell || '/bin/zsh' : '没有打开的会话'}{active?.status === 'connecting' && <span className="muted">正在连接…</span>}</div><span><ShieldCheck size={12} />{active?.type === 'ssh' ? 'SSH 加密会话' : 'LOCAL SHELL'}<span className="toolbar-separator">|</span><span>UTF-8</span></span></div>
+          <div className="terminal-toolbar"><div><span className={`connection-state ${active?.status || 'exited'}`} />{active ? active.type === 'ssh' ? `${activeHost?.username || ''}@${activeHost?.hostname || active.label}` : info?.shell || '/bin/zsh' : '没有打开的会话'}{active?.status === 'connecting' && <span className="muted">正在连接…</span>}{active?.status === 'reconnecting' && <span role="status" className="reconnect-status" title={active.detail}>正在自动重连…</span>}</div><span><ShieldCheck size={12} />{active?.type === 'ssh' ? 'SSH 加密会话' : 'LOCAL SHELL'}<span className="toolbar-separator">|</span><span>UTF-8</span></span></div>
           <div className="terminal-stage">{sessions.map(session => <TerminalPane key={session.id} session={session} active={activeId === session.id} onFailure={errorSession} />)}
             {!sessions.length && <div className="terminal-welcome"><span className="welcome-logo"><TerminalSquare size={32} /></span><h2>从一行命令开始。</h2><p>本地 Shell、远程主机和文件，放在同一个工作空间。</p><div><button className="button primary" onClick={() => local()}><Plus size={15} />打开本地终端</button><button className="button" onClick={() => setEditingHost({})}>连接 SSH 主机</button></div><small>{shortcut}T 新终端 <span>·</span> {shortcut}N 新主机</small></div>}
             {active && ['error', 'exited'].includes(active.status) && <div className="session-ended"><span className={active.status === 'error' ? 'danger-text' : ''}>{active.status === 'error' ? '连接失败' : '会话已结束'}</span><span>{active.detail}</span><button className="text-button" onClick={retry}>重新打开<ChevronRight size={13} /></button></div>}
           </div>
         </section>
         {showFiles && <><div className="panel-resizer" onPointerDown={changeFileHeight} role="separator" aria-label="拖动调整文件面板高度"><span /></div><section className="file-workspace" style={{ height: fileHeight }}><div className="files-heading"><div><FolderOpen size={15} /><strong>文件管理</strong><span className="subtle-pill">{active?.type === 'ssh' ? 'SFTP' : 'LOCAL'}</span><span className="files-context-label">{active?.label || '无活跃终端'}</span></div><div>{active?.type === 'ssh' && <><button className="small-text-button" disabled={!remoteOnline} onClick={() => void transfer('upload')}><ArrowUpFromLine size={13} />上传文件</button><span className="tool-divider" /><button className="small-text-button" disabled={!remoteOnline || !selectedFiles.length} onClick={() => void transfer('download')}><ArrowDownToLine size={13} />下载所选</button></>}<button className="icon-button" title="收起文件面板" onClick={() => setShowFiles(false)}><ChevronDown size={15} /></button></div></div><div className="file-panes">{info && active ?
-          <FilePane key={active.id} side={active.type === 'ssh' ? 'remote' : 'local'} home={info.home} sessionId={active.id} online={active.status === 'ready'} hostName={activeHost?.name} terminalDirectory={active.cwd} refresh={refresh} selection={selectedFiles} onSelection={entries => setFileSelection({ sessionId: active.id, entries })} onDirectory={directory => setFileLocation({ sessionId: active.id, directory })} onEdit={setEditor} onTransfer={transfer} />
+          <FilePane key={active.id} side={active.type === 'ssh' ? 'remote' : 'local'} home={info.home} sessionId={active.id} online={active.status === 'ready'} reconnecting={active.status === 'reconnecting'} hostName={activeHost?.name} terminalDirectory={active.cwd} refresh={refresh} selection={selectedFiles} onSelection={entries => setFileSelection({ sessionId: active.id, entries })} onDirectory={directory => setFileLocation({ sessionId: active.id, directory })} onEdit={setEditor} onTransfer={transfer} />
           : <div className="file-context-empty"><FolderOpen size={28} /><strong>文件随终端一起工作</strong><span>打开一个终端会话，即可查看对应目录</span></div>}
         </div></section></>}
         <section className={`transfer-panel ${showTransfers ? 'expanded' : ''}`}><button className="transfer-summary" onClick={() => setShowTransfers(!showTransfers)}><ArrowRightLeft size={13} /><strong>传输队列</strong><span className={running.length ? 'transfer-count busy' : 'transfer-count'}>{running.length ? `${running.length} 进行中` : transfers.length ? `${transfers.filter(task => task.status === 'done').length} 已完成` : '暂无传输'}</span><span className="spacer" />{running.length > 0 && <LoaderCircle size={12} className="spin" />}{showTransfers ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>

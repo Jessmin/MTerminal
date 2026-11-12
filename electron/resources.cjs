@@ -147,13 +147,15 @@ class Resources {
     const item = this.sessions.items.get(id);
     if (!item || item.status !== 'ready') throw new Error('当前终端尚未连接');
     if (this.sessions.activeId !== id) throw new Error('当前终端已切换');
-    let state = this.states.get(item);
-    if (!state) { state = {}; this.states.set(item, state); }
+    const { conn, remoteOS } = item;
+    const transport = conn || item;
+    let state = this.states.get(transport);
+    if (!state) { state = {}; this.states.set(transport, state); }
     if (state.pending) return state.pending;
     if (state.result && this.now() - state.time < 2000) return state.result;
     state.pending = (async () => {
-      const raw = item.type === 'local' ? await this.local() : parseRemote(await this.remote(item.conn, collectionScript(item.remoteOS), 6000), item.remoteOS);
-      if (this.sessions.items.get(id) !== item || this.sessions.activeId !== id) throw new Error('当前终端已切换或关闭');
+      const raw = item.type === 'local' ? await this.local() : parseRemote(await this.remote(conn, collectionScript(remoteOS), 6000), remoteOS);
+      if (this.sessions.items.get(id) !== item || this.sessions.activeId !== id || item.conn !== conn || item.status !== 'ready') throw new Error('当前终端已切换或关闭');
       const time = this.now();
       const result = { sessionId: id, sampledAt: Date.now(), ...sampleRates(raw, state.raw ? { raw: state.raw, time: state.time } : null, time) };
       state.raw = raw; state.time = time; state.result = result;
